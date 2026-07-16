@@ -32,15 +32,19 @@ spec:
             name: gitlab.apps.ocp.example.com   # <-- external URL host
           # ssh: gitlab-ssh.apps.ocp.example.com
 
-        # --- Ingress: on OpenShift the Operator provisions Routes. Disable the
-        #     bundled nginx-ingress controller (it lacks a valid OCP SCC OOTB). ---
+        # --- Ingress: on OpenShift the Operator provisions Routes itself. ---
+        # `class: none` stops the chart making Ingress objects; the Operator then
+        # creates Routes for webservice/registry/kas. Do NOT set provider: nginx —
+        # that pulls in the nginx controller path and suppresses Route creation.
         ingress:
           configureCertmanager: false
           class: none
-          provider: nginx      # Operator translates to Routes on OCP; keep certs below
           tls:
             enabled: true
-            # secretName: gitlab-tls   # supply your own cert, or use the router default
+            # Provide your own wildcard cert for edge Routes, OR leave unset to use
+            # the OpenShift router's default cert. If Routes still don't appear,
+            # try tls.enabled: false so the Operator makes plain edge Routes.
+            # secretName: gitlab-tls
 
         # --- In-cluster PostgreSQL (deps-chart, StatefulSet mode) ---
         # StatefulSet service is `gitlab-postgresql`. If you switch deps-chart to
@@ -92,11 +96,15 @@ spec:
             tmpBucket: gitlab-artifacts
 
       # --- Container registry uses the same MinIO ---
+      # IMPORTANT: the registry needs a docker-distribution `s3:` storage config,
+      # NOT the Rails/fog `connection` format. deps-chart renders that as the
+      # `gitlab-registry-storage` secret (key: config). Reusing gitlab-rails-storage
+      # here makes the registry crash on startup.
       registry:
         enabled: true
         storage:
-          secret: gitlab-rails-storage
-          key: connection
+          secret: gitlab-registry-storage
+          key: config
 
       # --- Right-size the stateless tiers for a team-scale CE install ---
       gitlab:
@@ -115,4 +123,17 @@ spec:
       postgresql:
         install: false
       redis:
+        install: false
+
+      # --- REQUIRED on OpenShift so the Operator can finish reconciling and
+      #     create Routes. Without nginx-ingress.enabled:false the controller
+      #     gets stuck (no valid OCP SCC) and Routes are never generated. ---
+      nginx-ingress:
+        enabled: false
+      certmanager:
+        install: false
+      # Optional but recommended: don't pull in extras that also need attention.
+      prometheus:
+        install: false
+      gitlab-runner:
         install: false

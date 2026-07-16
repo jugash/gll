@@ -165,7 +165,9 @@ Enable the scheduled backup CronJob in the CR under `gitlab.toolbox.backups.cron
 | Webservice can't reach DB | Wrong `global.psql.host` or secret key | Confirm service DNS + `gitlab-postgresql` secret |
 | Redis auth failures | `global.redis.auth` secret/key mismatch | Match deps-chart `gitlab-redis` secret |
 | Object storage 403/timeouts | MinIO endpoint/keys wrong in `gitlab-rails-storage` | Check the `connection` secret + MinIO service |
-| nginx-ingress pod CrashLoop | Bundled ingress on OCP (no SCC) | Keep it disabled; use Routes |
+| **Routes never created** | `nginx-ingress`/`certmanager` subcharts not disabled → operator stalls before Route stage | Set `nginx-ingress.enabled: false`, `certmanager.install: false` in the CR; don't set `ingress.provider: nginx`. Then `oc get route -n gitlab` |
+| **Registry pod CrashLoop / won't start** | `registry.storage` pointed at the Rails `connection` secret (wrong schema) | Use the `gitlab-registry-storage` secret (docker `s3:` format, key `config`) from deps-chart |
+| nginx-ingress pod CrashLoop | Bundled ingress on OCP (no SCC) | Keep it disabled (`nginx-ingress.enabled: false`); use Routes |
 | Postgres pod CrashLoop as arbitrary UID | Swapped in `docker.io/postgres` (no UID tolerance) | Use the sclorg image (default) or another arbitrary-UID-safe image |
 | Postgres missing extensions | extensions Job failed | Check `job/gitlab-postgresql-extensions` logs; it creates `pg_trgm`,`btree_gist` |
 | CNPG Cluster stuck (cnpg mode) | CNPG operator not installed | Install CloudNativePG from OperatorHub, or use default StatefulSet mode |

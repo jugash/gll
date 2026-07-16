@@ -122,3 +122,15 @@ railsStorageSecret:
   enabled: true
   name: "gitlab-rails-storage"     # referenced by the CR's global.appConfig.object_store
   region: "us-east-1"
+
+# -----------------------------------------------------------------------------
+# Container-registry storage secret (docker-distribution `s3:` format).
+# The registry does NOT understand the Rails/fog `connection` format above, so it
+# needs its own secret. Referenced by the CR's registry.storage.
+# -----------------------------------------------------------------------------
+registryStorageSecret:
+  enabled: true
+  name: "gitlab-registry-storage"
+  key: "config"
+  bucket: "gitlab-registry"        # must exist in minio.buckets
+  region: "us-east-1"
