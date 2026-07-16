@@ -1,0 +1,102 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "gitlab-ce-ocp.fullname" . }}-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gitlab-ce-ocp.labels" . | nindent 4 }}
+data:
+  # Assembled gitlab.rb passed to the container via GITLAB_OMNIBUS_CONFIG.
+  omnibus.rb: |
+    external_url '{{ .Values.gitlab.externalUrl }}'
+    gitlab_rails['time_zone'] = '{{ .Values.gitlab.timeZone }}'
+
+    # --- Behind the OpenShift Router: trust the proxy, don't self-terminate TLS ---
+    {{- if eq .Values.openshift.route.tls.termination "edge" }}
+    nginx['listen_port'] = 80
+    nginx['listen_https'] = false
+    nginx['proxy_set_headers'] = {
+      'X-Forwarded-Proto' => 'https',
+      'X-Forwarded-Ssl' => 'on'
+    }
+    {{- end }}
+
+    # --- Reduce footprint: puma/sidekiq sized for a single node ---
+    puma['worker_processes'] = 2
+    sidekiq['concurrency'] = 15
+    prometheus_monitoring['enable'] = {{ .Values.gitlab.monitoring.enabled }}
+
+    # --- SSH ---
+    {{- if .Values.service.ssh.enabled }}
+    gitlab_rails['gitlab_shell_ssh_port'] = {{ .Values.service.sshPort }}
+    {{- end }}
+
+    # --- External PostgreSQL ---
+    {{- if .Values.externalServices.postgresql.enabled }}
+    postgresql['enable'] = false
+    gitlab_rails['db_adapter'] = 'postgresql'
+    gitlab_rails['db_host'] = '{{ .Values.externalServices.postgresql.host }}'
+    gitlab_rails['db_port'] = {{ .Values.externalServices.postgresql.port }}
+    gitlab_rails['db_database'] = '{{ .Values.externalServices.postgresql.database }}'
+    gitlab_rails['db_username'] = '{{ .Values.externalServices.postgresql.username }}'
+    gitlab_rails['db_password'] = ENV['GITLAB_DB_PASSWORD']
+    {{- end }}
+
+    # --- External Redis ---
+    {{- if .Values.externalServices.redis.enabled }}
+    redis['enable'] = false
+    {{- if .Values.externalServices.redis.sentinel.enabled }}
+    gitlab_rails['redis_sentinels'] = [
+      {{- range .Values.externalServices.redis.sentinel.hosts }}
+      { host: '{{ (splitList ":" .) | first }}', port: {{ (splitList ":" .) | last }} },
+      {{- end }}
+    ]
+    gitlab_rails['redis_host'] = '{{ .Values.externalServices.redis.sentinel.masterName }}'
+    {{- else }}
+    gitlab_rails['redis_host'] = '{{ .Values.externalServices.redis.host }}'
+    gitlab_rails['redis_port'] = {{ .Values.externalServices.redis.port }}
+    {{- end }}
+    gitlab_rails['redis_password'] = ENV['GITLAB_REDIS_PASSWORD']
+    {{- end }}
+
+    # --- Object storage (consolidated form) ---
+    {{- if .Values.externalServices.objectStorage.enabled }}
+    gitlab_rails['object_store']['enabled'] = true
+    gitlab_rails['object_store']['connection'] = {
+      'provider' => '{{ .Values.externalServices.objectStorage.provider }}',
+      'region' => '{{ .Values.externalServices.objectStorage.region }}',
+      {{- if .Values.externalServices.objectStorage.endpoint }}
+      'endpoint' => '{{ .Values.externalServices.objectStorage.endpoint }}',
+      'path_style' => true,
+      {{- end }}
+      'aws_access_key_id' => ENV['GITLAB_OBJSTORE_ACCESS_KEY'],
+      'aws_secret_access_key' => ENV['GITLAB_OBJSTORE_SECRET_KEY']
+    }
+    gitlab_rails['object_store']['objects']['artifacts']['bucket'] = '{{ .Values.externalServices.objectStorage.buckets.artifacts }}'
+    gitlab_rails['object_store']['objects']['lfs']['bucket'] = '{{ .Values.externalServices.objectStorage.buckets.lfs }}'
+    gitlab_rails['object_store']['objects']['uploads']['bucket'] = '{{ .Values.externalServices.objectStorage.buckets.uploads }}'
+    gitlab_rails['object_store']['objects']['packages']['bucket'] = '{{ .Values.externalServices.objectStorage.buckets.packages }}'
+    {{- end }}
+
+    # --- Backups ---
+    {{- if .Values.backup.enabled }}
+    gitlab_rails['backup_keep_time'] = {{ .Values.backup.keepTime }}
+    {{- if and .Values.externalServices.objectStorage.enabled .Values.externalServices.objectStorage.buckets.backups }}
+    gitlab_rails['backup_upload_connection'] = {
+      'provider' => '{{ .Values.externalServices.objectStorage.provider }}',
+      'region' => '{{ .Values.externalServices.objectStorage.region }}',
+      {{- if .Values.externalServices.objectStorage.endpoint }}
+      'endpoint' => '{{ .Values.externalServices.objectStorage.endpoint }}',
+      'path_style' => true,
+      {{- end }}
+      'aws_access_key_id' => ENV['GITLAB_OBJSTORE_ACCESS_KEY'],
+      'aws_secret_access_key' => ENV['GITLAB_OBJSTORE_SECRET_KEY']
+    }
+    gitlab_rails['backup_upload_remote_directory'] = '{{ .Values.externalServices.objectStorage.buckets.backups }}'
+    {{- end }}
+    {{- end }}
+
+    # --- User-supplied raw config (highest precedence) ---
+    {{- with .Values.gitlab.extraOmnibusConfig }}
+    {{ . | nindent 4 }}
+    {{- end }}

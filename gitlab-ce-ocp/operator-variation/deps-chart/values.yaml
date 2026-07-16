@@ -1,0 +1,102 @@
+# =============================================================================
+# gitlab-deps-ocp — in-cluster dependencies for the GitLab Operator
+# =============================================================================
+# GitLab removed the bundled Redis/PostgreSQL/MinIO subcharts in 19.0 (chart
+# 10.0). The Operator therefore expects EXTERNAL datastores. This chart provides
+# those datastores IN-CLUSTER as first-class, independently-managed workloads,
+# and emits the exact Secrets the GitLab CR references.
+#
+# IMAGE / LICENSE NOTE
+# The Bitnami public catalog was deleted on 2025-09-29; versioned tags now live in
+# the unmaintained `bitnamilegacy` repo, and hardened images are paid (Bitnami
+# Secure Images). This chart therefore uses license-clean, OpenShift-native,
+# actively-maintained images instead:
+#   - PostgreSQL : CloudNativePG (Apache-2.0) — needs the CNPG operator installed
+#   - Redis      : Valkey (BSD-3, the open Redis fork)
+#   - Object     : MinIO (AGPL-3.0, free) — or OpenShift Data Foundation for prod
+# All run under OpenShift's default `restricted-v2` SCC; no custom SCC for deps.
+# =============================================================================
+
+global:
+  # Namespace note: install this chart into the SAME namespace as the GitLab CR.
+  # Secret names below are what ../gitlab-cr.yaml expects — keep them in sync.
+  storageClass: ""          # "" = cluster default; use RWO block (e.g. ODF Ceph RBD)
+
+# -----------------------------------------------------------------------------
+# PostgreSQL — CloudNativePG (Apache-2.0)
+# -----------------------------------------------------------------------------
+# CNPG is the OpenShift-native, arbitrary-UID-friendly way to run Postgres. It is
+# used for BOTH the simple and HA cases — just change `instances`. Requires the
+# CloudNativePG operator (install once from OperatorHub). The CR points at the
+# CNPG read-write service `gitlab-postgresql-rw`.
+postgresql:
+  enabled: true
+  instances: 1               # 1 = simple; set 3 for HA (primary + 2 replicas, auto-failover)
+  imageName: "ghcr.io/cloudnative-pg/postgresql:16"
+  database: "gitlabhq_production"
+  username: "gitlab"
+  # Password in secret `gitlab-postgresql` (keys: username, password). Auto-generated if empty.
+  password: ""
+  resources:
+    requests: { cpu: "1", memory: "2Gi" }
+    limits:   { cpu: "2", memory: "4Gi" }
+  persistence:
+    size: 50Gi
+
+# -----------------------------------------------------------------------------
+# Redis — Valkey (BSD-3, the open-source Redis fork)
+# -----------------------------------------------------------------------------
+redis:
+  enabled: true
+  image: "valkey/valkey:8"
+  # Password in secret `gitlab-redis` (key: password). Auto-generated if empty.
+  password: ""
+  # HA via Sentinel. The shipped template deploys a reliable single primary; set
+  # this true ONLY when you have deployed HA Redis/Valkey via a Redis operator
+  # (see docs) — it flips the GitLab CR wiring to Sentinel mode.
+  sentinel:
+    enabled: false
+    masterName: "gitlab"
+    replicas: 3
+    hosts: []                # host:port endpoints for the CR when enabled
+  resources:
+    requests: { cpu: "500m", memory: "1Gi" }
+    limits:   { cpu: "1", memory: "2Gi" }
+  persistence:
+    size: 8Gi
+
+# -----------------------------------------------------------------------------
+# MinIO (S3-compatible object storage, AGPL-3.0 — still free)
+# -----------------------------------------------------------------------------
+# Provides object storage for artifacts, LFS, uploads, packages, registry and
+# backups. For production at scale, prefer OpenShift Data Foundation (ODF/NooBaa)
+# and set minio.enabled: false, then point the CR at ODF instead.
+minio:
+  enabled: true
+  image: "quay.io/minio/minio:latest"
+  mcImage: "quay.io/minio/mc:latest"          # client, used by the bucket-create Job
+  # Access/secret keys stored in secret `gitlab-objectstore` (keys: accesskey/secretkey).
+  accessKey: "gitlab"
+  secretKey: ""              # auto-generated if empty
+  # Buckets created by an init Job.
+  buckets:
+    - gitlab-artifacts
+    - gitlab-lfs
+    - gitlab-uploads
+    - gitlab-packages
+    - gitlab-registry
+    - gitlab-backups
+  resources:
+    requests: { cpu: "500m", memory: "1Gi" }
+    limits:   { cpu: "2", memory: "4Gi" }
+  persistence:
+    size: 100Gi
+
+# -----------------------------------------------------------------------------
+# Object-storage connection secret rendered for the GitLab chart.
+# The cloud-native chart reads a single `connection` key (rails S3 config).
+# -----------------------------------------------------------------------------
+railsStorageSecret:
+  enabled: true
+  name: "gitlab-rails-storage"     # referenced by the CR's global.appConfig.object_store
+  region: "us-east-1"

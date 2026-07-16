@@ -1,0 +1,28 @@
+
+In-cluster GitLab dependencies deployed to namespace "{{ .Release.Namespace }}":
+
+  PostgreSQL : gitlab-postgresql-rw:5432  (CloudNativePG, instances: {{ .Values.postgresql.instances }})
+  Redis      : gitlab-redis:6379          (Valkey)
+  MinIO (S3) : gitlab-minio:9000          (console :9001)
+
+Secrets created for the GitLab CR to consume:
+  gitlab-postgresql      (key: password)
+  gitlab-redis           (key: password)
+  gitlab-objectstore     (keys: accesskey, secretkey)
+  {{ .Values.railsStorageSecret.name }}  (key: connection — object storage config)
+
+NEXT STEPS
+  1. Confirm datastores are ready:
+       oc get pods -n {{ .Release.Namespace }} -l app.kubernetes.io/part-of=gitlab-deps
+  2. Apply the GitLab custom resource (edit host/domain first):
+       oc apply -f ../gitlab-cr.yaml -n {{ .Release.Namespace }}
+  3. Watch the Operator reconcile GitLab:
+       oc get gitlab -n {{ .Release.Namespace }} -w
+
+NOTE: Datastores use license-clean images (CloudNativePG / Valkey / MinIO), not
+Bitnami. Defaults are single-instance (reliable, simple). For production HA set
+postgresql.instances=3 and deploy HA Valkey via a Redis/Valkey operator, then set
+redis.sentinel.enabled=true. See docs/installation-guide.md.
+
+PREREQUISITE: the CloudNativePG operator must be installed (OperatorHub) before
+this chart, since PostgreSQL is a CNPG Cluster resource.

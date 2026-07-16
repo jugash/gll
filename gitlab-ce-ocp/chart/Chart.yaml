@@ -1,0 +1,36 @@
+apiVersion: v2
+name: gitlab-ce-ocp
+description: |
+  GitLab Community Edition (Omnibus) packaged for Red Hat OpenShift (OCP).
+  Self-contained deployment with bundled PostgreSQL, Redis, and Gitaly inside the
+  Omnibus image, an OpenShift Route, a dedicated SCC + ServiceAccount, persistent
+  storage, health probes, and an optional scheduled backup job.
+type: application
+
+# Chart version follows SemVer independently of the app.
+version: 1.0.0
+
+# The GitLab CE release shipped by default (Omnibus image tag). Override in values.
+appVersion: "18.8.4-ce.0"
+
+keywords:
+  - gitlab
+  - gitlab-ce
+  - openshift
+  - ocp
+  - scm
+  - devops
+  - ci-cd
+
+home: https://github.com/your-org/gitlab-ce-ocp
+sources:
+  - https://gitlab.com/gitlab-org/omnibus-gitlab
+
+maintainers:
+  - name: Platform Engineering
+    email: platform@example.com
+
+annotations:
+  # Rendered into the release notes; keep in sync with CHANGELOG.
+  category: DeveloperTools
+  licenses: MIT

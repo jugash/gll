@@ -1,0 +1,56 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gitlab-ce-ocp.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gitlab-ce-ocp.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "gitlab-ce-ocp.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.service.httpPort }}
+      targetPort: http
+      protocol: TCP
+---
+# Headless service required by the StatefulSet.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gitlab-ce-ocp.fullname" . }}-headless
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gitlab-ce-ocp.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "gitlab-ce-ocp.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.service.httpPort }}
+      targetPort: http
+{{- if .Values.service.ssh.enabled }}
+---
+# Git-over-SSH cannot traverse the HTTP Router; expose it separately.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gitlab-ce-ocp.fullname" . }}-ssh
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gitlab-ce-ocp.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.ssh.type }}
+  selector:
+    {{- include "gitlab-ce-ocp.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: ssh
+      port: {{ .Values.service.sshPort }}
+      targetPort: ssh
+      protocol: TCP
+      {{- if and (eq .Values.service.ssh.type "NodePort") .Values.service.ssh.nodePort }}
+      nodePort: {{ .Values.service.ssh.nodePort }}
+      {{- end }}
+{{- end }}

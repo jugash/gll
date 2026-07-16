@@ -1,0 +1,89 @@
+{{- if .Values.redis.enabled }}
+{{- /*
+Single-primary Valkey (BSD-3, the open Redis fork) with password auth and
+persistence. Valkey writes only to its data dir, so it runs cleanly under
+`restricted-v2` with an arbitrary UID + fsGroup (no uid resolution needed).
+
+For Sentinel-based HA in-cluster, do NOT hand-roll a fragile Sentinel topology
+here — deploy HA Valkey via a Redis/Valkey operator (see installation-guide.md)
+and set redis.sentinel.enabled=true so the GitLab CR is wired for Sentinel.
+Valkey is wire-compatible with Redis, so GitLab connects to it unchanged.
+*/ -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitlab-redis
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "deps.labels" . | nindent 4 }}
+spec:
+  selector: { app: gitlab-redis }
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: gitlab-redis
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "deps.labels" . | nindent 4 }}
+spec:
+  serviceName: gitlab-redis
+  replicas: 1
+  selector:
+    matchLabels: { app: gitlab-redis }
+  template:
+    metadata:
+      labels:
+        app: gitlab-redis
+        {{- include "deps.labels" . | nindent 8 }}
+    spec:
+      securityContext:
+        fsGroup: 1000
+      containers:
+        - name: valkey
+          image: {{ .Values.redis.image }}
+          command:
+            - valkey-server
+            - --requirepass
+            - $(VALKEY_PASSWORD)
+            - --appendonly
+            - "yes"
+            - --dir
+            - /data
+          ports:
+            - containerPort: 6379
+              name: redis
+          env:
+            - name: VALKEY_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: gitlab-redis, key: password }
+          readinessProbe:
+            exec:
+              command: ["/bin/sh","-c","valkey-cli -a \"$VALKEY_PASSWORD\" ping | grep -q PONG"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: { port: 6379 }
+            initialDelaySeconds: 20
+            periodSeconds: 15
+          resources:
+            {{- toYaml .Values.redis.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with .Values.global.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.redis.persistence.size }}
+{{- end }}

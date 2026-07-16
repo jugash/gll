@@ -1,0 +1,89 @@
+# =============================================================================
+# Production HA-oriented overrides for gitlab-ce-ocp
+# =============================================================================
+# This graduates the bundled Omnibus deployment toward HA by pointing GitLab at
+# EXTERNAL, independently-HA datastores. The GitLab pod itself remains single
+# (Omnibus), but its state now lives in redundant systems, so pod/node loss no
+# longer risks the database or object data, and RTO drops sharply.
+#
+# For FULL active/active GitLab (multiple Puma/Sidekiq/Gitaly), move to the
+# GitLab Operator with these same external datastores — see the tradeoffs doc.
+# =============================================================================
+
+image:
+  tag: "18.8.4-ce.0"
+
+gitlab:
+  externalUrl: "https://gitlab.apps.ocp.example.com"
+
+resources:
+  requests:
+    cpu: "4"
+    memory: "12Gi"
+  limits:
+    cpu: "8"
+    memory: "16Gi"
+
+persistence:
+  data:
+    size: 250Gi
+    storageClass: "ocs-storagecluster-ceph-rbd"   # ODF block, adjust to cluster
+  config:
+    size: 1Gi
+  logs:
+    size: 20Gi
+
+openshift:
+  route:
+    enabled: true
+    host: "gitlab.apps.ocp.example.com"
+    tls:
+      termination: reencrypt
+      insecureEdgeTerminationPolicy: Redirect
+  scc:
+    create: true
+
+externalServices:
+  postgresql:
+    enabled: true
+    host: "gitlab-postgres-primary.databases.svc.cluster.local"   # Patroni/CNPG endpoint
+    port: 5432
+    database: "gitlabhq_production"
+    username: "gitlab"
+    existingSecret: "gitlab-postgres"
+    secretKey: "password"
+  redis:
+    enabled: true
+    sentinel:
+      enabled: true
+      masterName: "gitlab"
+      hosts:
+        - "redis-sentinel-0.databases.svc.cluster.local:26379"
+        - "redis-sentinel-1.databases.svc.cluster.local:26379"
+        - "redis-sentinel-2.databases.svc.cluster.local:26379"
+    existingSecret: "gitlab-redis"
+    secretKey: "password"
+  objectStorage:
+    enabled: true
+    provider: "AWS"
+    region: "us-east-1"
+    endpoint: "https://s3.openshift-storage.svc"   # ODF NooBaa / RGW endpoint
+    existingSecret: "gitlab-objectstore"
+    buckets:
+      artifacts: "gitlab-artifacts"
+      lfs: "gitlab-lfs"
+      uploads: "gitlab-uploads"
+      packages: "gitlab-packages"
+      backups: "gitlab-backups"
+
+backup:
+  enabled: true
+  schedule: "0 2 * * *"
+  keepTime: 604800
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+networkPolicy:
+  enabled: true

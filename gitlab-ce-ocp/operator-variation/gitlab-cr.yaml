@@ -1,0 +1,117 @@
+# =============================================================================
+# GitLab custom resource (Community Edition) for the GitLab Operator on OpenShift
+# =============================================================================
+# Prerequisites (see docs/installation-guide.md):
+#   1. GitLab Operator installed via OLM (namespace-scoped or cluster-wide).
+#   2. In-cluster dependencies deployed:  helm install deps ./deps-chart -n gitlab
+#      -> creates services gitlab-postgresql / gitlab-redis / gitlab-minio and the
+#         secrets referenced below.
+#
+# Edit the marked values (host, domain, chart version) for your cluster, then:
+#   oc apply -f gitlab-cr.yaml -n gitlab
+# =============================================================================
+apiVersion: apps.gitlab.com/v1beta1
+kind: GitLab
+metadata:
+  name: gitlab
+  namespace: gitlab
+spec:
+  # Pin to a chart version whose appVersion is the GitLab release you want.
+  # Check `oc get -n gitlab-system deploy` / the Operator release notes for the
+  # supported chart versions. Example uses an 8.x chart (GitLab 18.x, CE).
+  chart:
+    version: "8.8.0"          # <-- adjust to a version supported by your Operator
+    values:
+      global:
+        edition: ce           # Community Edition
+
+        hosts:
+          domain: apps.ocp.example.com          # <-- your OCP apps wildcard domain
+          https: true
+          gitlab:
+            name: gitlab.apps.ocp.example.com   # <-- external URL host
+          # ssh: gitlab-ssh.apps.ocp.example.com
+
+        # --- Ingress: on OpenShift the Operator provisions Routes. Disable the
+        #     bundled nginx-ingress controller (it lacks a valid OCP SCC OOTB). ---
+        ingress:
+          configureCertmanager: false
+          class: none
+          provider: nginx      # Operator translates to Routes on OCP; keep certs below
+          tls:
+            enabled: true
+            # secretName: gitlab-tls   # supply your own cert, or use the router default
+
+        # --- In-cluster PostgreSQL via CloudNativePG (deps-chart) ---
+        # CNPG exposes a read-write service named <cluster>-rw.
+        psql:
+          host: gitlab-postgresql-rw.gitlab.svc.cluster.local
+          port: 5432
+          database: gitlabhq_production
+          username: gitlab
+          password:
+            secret: gitlab-postgresql
+            key: password
+
+        # --- In-cluster Redis (deps-chart) ---
+        redis:
+          host: gitlab-redis.gitlab.svc.cluster.local
+          port: 6379
+          auth:
+            enabled: true
+            secret: gitlab-redis
+            key: password
+          # For Sentinel HA (redis.sentinel.enabled=true in deps-chart), replace
+          # `host` with the Sentinel master name and add:
+          # sentinels:
+          #   - host: gitlab-redis-node-0.gitlab-redis-headless.gitlab.svc
+          #     port: 26379
+
+        # --- In-cluster MinIO object storage (deps-chart) ---
+        # Disable the (removed) bundled MinIO subchart and point object storage at
+        # our MinIO via the rendered connection secret.
+        minio:
+          enabled: false
+        appConfig:
+          object_store:
+            enabled: true
+            connection:
+              secret: gitlab-rails-storage   # rendered by deps-chart
+              key: connection
+          lfs:
+            bucket: gitlab-lfs
+          artifacts:
+            bucket: gitlab-artifacts
+          uploads:
+            bucket: gitlab-uploads
+          packages:
+            bucket: gitlab-packages
+          backups:
+            bucket: gitlab-backups
+            tmpBucket: gitlab-artifacts
+
+      # --- Container registry uses the same MinIO ---
+      registry:
+        enabled: true
+        storage:
+          secret: gitlab-rails-storage
+          key: connection
+
+      # --- Right-size the stateless tiers for a team-scale CE install ---
+      gitlab:
+        webservice:
+          minReplicas: 2
+          maxReplicas: 3
+        sidekiq:
+          minReplicas: 2
+          maxReplicas: 3
+        gitaly:
+          # Gitaly is stateful; the chart runs it as a StatefulSet with its own PVC.
+          persistence:
+            size: 100Gi
+
+      # Disable the removed bundled subcharts explicitly (belt and braces).
+      postgresql:
+        install: false
+      redis:
+        install: false

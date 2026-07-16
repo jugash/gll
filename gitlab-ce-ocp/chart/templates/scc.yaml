@@ -1,0 +1,81 @@
+{{- if .Values.openshift.scc.create }}
+{{- /*
+The Omnibus image uses the runit supervisor and runs bundled services
+(postgres, redis, gitaly...) as their own users, and needs to write to
+/etc/passwd-style files and bind privileged ports internally. OpenShift's
+default `restricted-v2` SCC forbids this. Rather than granting cluster-wide
+`anyuid`, we create a dedicated, namespaced-bound SCC and grant its use ONLY
+to this release's ServiceAccount via RBAC.
+*/ -}}
+apiVersion: security.openshift.io/v1
+kind: SecurityContextConstraints
+metadata:
+  name: {{ include "gitlab-ce-ocp.sccName" . }}
+  labels:
+    {{- include "gitlab-ce-ocp.labels" . | nindent 4 }}
+# Allow the container to pick its own UID (Omnibus assumes uid 0 for the supervisor).
+allowPrivilegedContainer: false
+allowPrivilegeEscalation: true
+allowHostDirVolumePlugin: false
+allowHostIPC: false
+allowHostNetwork: false
+allowHostPID: false
+allowHostPorts: false
+readOnlyRootFilesystem: false
+runAsUser:
+  type: RunAsAny
+seLinuxContext:
+  type: MustRunAs
+fsGroup:
+  type: RunAsAny
+supplementalGroups:
+  type: RunAsAny
+requiredDropCapabilities:
+  - KILL
+  - MKNOD
+allowedCapabilities:
+  - CHOWN
+  - DAC_OVERRIDE
+  - FOWNER
+  - SETGID
+  - SETUID
+  - SETPCAP
+  - NET_BIND_SERVICE
+volumes:
+  - configMap
+  - downwardAPI
+  - emptyDir
+  - persistentVolumeClaim
+  - projected
+  - secret
+users:
+  - system:serviceaccount:{{ .Release.Namespace }}:{{ include "gitlab-ce-ocp.serviceAccountName" . }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "gitlab-ce-ocp.sccName" . }}-use
+  labels:
+    {{- include "gitlab-ce-ocp.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["security.openshift.io"]
+    resources: ["securitycontextconstraints"]
+    resourceNames: ["{{ include "gitlab-ce-ocp.sccName" . }}"]
+    verbs: ["use"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "gitlab-ce-ocp.sccName" . }}-use
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gitlab-ce-ocp.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "gitlab-ce-ocp.sccName" . }}-use
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "gitlab-ce-ocp.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

@@ -1,0 +1,250 @@
+# =============================================================================
+# gitlab-ce-ocp — default values
+# =============================================================================
+# This chart deploys GitLab CE using the single-image Omnibus distribution
+# (gitlab/gitlab-ce). PostgreSQL, Redis, Gitaly, Sidekiq, Puma and NGINX all run
+# INSIDE that one container. This makes the deployment self-contained ("in-cluster
+# bundled") but means the GitLab pod is a single, vertically-scaled unit.
+#
+# For true horizontal HA (multiple Puma/Sidekiq replicas, Patroni Postgres, Redis
+# Sentinel) see docs/deployment-approaches-tradeoffs.md — that path uses the GitLab
+# Operator or the cloud-native chart with EXTERNAL datastores. The `externalServices`
+# block below lets you graduate this chart toward that model without a reinstall.
+# =============================================================================
+
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: gitlab/gitlab-ce
+  # Pin to a specific patch release for reproducibility. Do not use "latest".
+  tag: "18.8.4-ce.0"
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+  # - name: my-registry-secret
+
+# -----------------------------------------------------------------------------
+# Core GitLab configuration
+# -----------------------------------------------------------------------------
+gitlab:
+  # External URL users and Git clients will use. MUST match the Route host below.
+  externalUrl: "https://gitlab.apps.ocp.example.com"
+
+  # Timezone applied to the Omnibus config.
+  timeZone: "UTC"
+
+  # Initial root password. If empty, a random one is generated and stored in the
+  # gitlab initial root password secret created by Omnibus (kubectl exec to read),
+  # or supply your own via an existing secret (see rootPassword.existingSecret).
+  rootPassword:
+    value: ""
+    existingSecret: ""      # secret with key `password`
+    secretKey: "password"
+
+  # Extra raw Omnibus config (gitlab.rb syntax) appended verbatim. Powerful escape
+  # hatch for SMTP, LDAP, object storage, etc.
+  extraOmnibusConfig: |
+    # gitlab_rails['smtp_enable'] = true
+    # gitlab_rails['gitlab_email_from'] = 'gitlab@example.com'
+
+  # Prometheus/monitoring bundled exporters. Disabled by default to save memory.
+  monitoring:
+    enabled: false
+
+# -----------------------------------------------------------------------------
+# OpenShift specifics
+# -----------------------------------------------------------------------------
+openshift:
+  # Create an OpenShift Route (preferred over Ingress on OCP).
+  route:
+    enabled: true
+    host: "gitlab.apps.ocp.example.com"
+    # edge = TLS terminated at the router. passthrough = TLS terminated in-pod.
+    # reencrypt = router terminates, re-encrypts to pod.
+    tls:
+      termination: edge
+      insecureEdgeTerminationPolicy: Redirect
+      # For edge/reencrypt you may provide certs, or leave empty to use the
+      # router's default wildcard cert.
+      certificate: ""
+      key: ""
+      caCertificate: ""
+    annotations: {}
+
+  # Ingress alternative (used when route.enabled=false, e.g. non-OCP k8s).
+  ingress:
+    enabled: false
+    className: ""
+    host: "gitlab.apps.ocp.example.com"
+    annotations: {}
+    tls:
+      enabled: true
+      secretName: ""
+
+  # SCC handling. The Omnibus image expects to manage users/permissions and the
+  # runit process supervisor, which needs an SCC more permissive than OpenShift's
+  # default `restricted-v2`. This chart can create a dedicated SCC and bind it to
+  # its own ServiceAccount so you do NOT grant `anyuid` cluster-wide.
+  scc:
+    # create a purpose-built SCC (recommended). Requires cluster-admin at install.
+    create: true
+    name: "gitlab-ce-scc"
+    # If create=false, an existing SCC name to expect the SA to already be bound to.
+    existing: ""
+
+# -----------------------------------------------------------------------------
+# ServiceAccount
+# -----------------------------------------------------------------------------
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# -----------------------------------------------------------------------------
+# Workload
+# -----------------------------------------------------------------------------
+# Omnibus is a single stateful unit -> StatefulSet with replicas: 1.
+# Increasing replicas here is NOT supported (they would fight over the same DB).
+# To scale, externalize datastores (see externalServices) and move to the
+# cloud-native chart / Operator.
+replicaCount: 1
+
+updateStrategy:
+  type: RollingUpdate
+
+resources:
+  requests:
+    cpu: "2"
+    memory: "8Gi"
+  limits:
+    cpu: "8"
+    memory: "16Gi"
+
+# GitLab is slow to boot. Generous probe timings prevent restart loops.
+probes:
+  liveness:
+    initialDelaySeconds: 300
+    periodSeconds: 30
+    timeoutSeconds: 10
+    failureThreshold: 6
+  readiness:
+    initialDelaySeconds: 60
+    periodSeconds: 15
+    timeoutSeconds: 10
+    failureThreshold: 40      # ~10 min grace for first boot / migrations
+  startup:
+    enabled: true
+    initialDelaySeconds: 60
+    periodSeconds: 15
+    timeoutSeconds: 10
+    failureThreshold: 60      # ~15 min hard ceiling for first boot
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+
+podAnnotations: {}
+podLabels: {}
+
+# priorityClassName: system-cluster-critical
+
+# -----------------------------------------------------------------------------
+# Persistence — separate PVCs so backup/restore and sizing are independent.
+# -----------------------------------------------------------------------------
+persistence:
+  # /var/opt/gitlab — repositories (Gitaly), DB, uploads, LFS, artifacts, registry.
+  data:
+    enabled: true
+    size: 100Gi
+    accessMode: ReadWriteOnce
+    storageClass: ""          # "" = cluster default StorageClass
+    existingClaim: ""
+  # /etc/gitlab — secrets & gitlab.rb generated state.
+  config:
+    enabled: true
+    size: 1Gi
+    accessMode: ReadWriteOnce
+    storageClass: ""
+    existingClaim: ""
+  # /var/log/gitlab
+  logs:
+    enabled: true
+    size: 10Gi
+    accessMode: ReadWriteOnce
+    storageClass: ""
+    existingClaim: ""
+
+# -----------------------------------------------------------------------------
+# Service
+# -----------------------------------------------------------------------------
+service:
+  type: ClusterIP
+  httpPort: 80
+  sshPort: 22
+  # Expose Git-over-SSH. On OCP, SSH cannot go through the HTTP Router; use a
+  # LoadBalancer/NodePort service or a passthrough on a dedicated port.
+  ssh:
+    enabled: true
+    type: ClusterIP          # LoadBalancer | NodePort | ClusterIP
+    nodePort: ""             # only when type=NodePort
+
+# -----------------------------------------------------------------------------
+# External services (scale-out path). When enabled, the bundled counterpart is
+# switched off in gitlab.rb and GitLab points at your HA datastore instead.
+# -----------------------------------------------------------------------------
+externalServices:
+  postgresql:
+    enabled: false
+    host: ""
+    port: 5432
+    database: "gitlabhq_production"
+    username: "gitlab"
+    existingSecret: ""        # key: password
+    secretKey: "password"
+  redis:
+    enabled: false
+    host: ""
+    port: 6379
+    existingSecret: ""        # key: password
+    secretKey: "password"
+    # For Redis Sentinel HA:
+    sentinel:
+      enabled: false
+      masterName: "gitlab"
+      hosts: []               # ["sentinel-0:26379", ...]
+  objectStorage:
+    # S3-compatible (ODF/MinIO/AWS). Strongly recommended for HA & large repos.
+    enabled: false
+    provider: "AWS"
+    region: "us-east-1"
+    endpoint: ""              # e.g. https://s3.openshift-storage.svc
+    existingSecret: ""        # keys: accesskey, secretkey
+    buckets:
+      artifacts: "gitlab-artifacts"
+      lfs: "gitlab-lfs"
+      uploads: "gitlab-uploads"
+      packages: "gitlab-packages"
+      backups: "gitlab-backups"
+
+# -----------------------------------------------------------------------------
+# Scheduled backup (gitlab-backup) via CronJob that execs into the pod.
+# -----------------------------------------------------------------------------
+backup:
+  enabled: true
+  schedule: "0 2 * * *"       # daily 02:00
+  # Retention handled by GitLab's backup_keep_time (seconds).
+  keepTime: 604800            # 7 days
+  # If objectStorage.enabled + a backups bucket is set, backups stream to S3.
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+
+# -----------------------------------------------------------------------------
+# PodDisruptionBudget — meaningful once you externalize datastores and scale.
+# -----------------------------------------------------------------------------
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+
+networkPolicy:
+  enabled: false

@@ -1,0 +1,209 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "gitlab-ce-ocp.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gitlab-ce-ocp.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "gitlab-ce-ocp.fullname" . }}-headless
+  replicas: 1  # Omnibus is a single stateful unit; do not increase (see values.yaml)
+  selector:
+    matchLabels:
+      {{- include "gitlab-ce-ocp.selectorLabels" . | nindent 6 }}
+  updateStrategy:
+    type: {{ .Values.updateStrategy.type }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "gitlab-ce-ocp.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "gitlab-ce-ocp.serviceAccountName" . }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      terminationGracePeriodSeconds: 120
+      securityContext:
+        # Omnibus supervisor expects uid 0 inside the container. The dedicated SCC
+        # permits RunAsAny; keep this explicit so intent is clear.
+        runAsUser: 0
+        fsGroup: 0
+      containers:
+        - name: gitlab
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 80
+            - name: ssh
+              containerPort: 22
+            {{- if .Values.gitlab.monitoring.enabled }}
+            - name: metrics
+              containerPort: 9168
+            {{- end }}
+          env:
+            - name: GITLAB_OMNIBUS_CONFIG
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "gitlab-ce-ocp.fullname" . }}-config
+                  key: omnibus.rb
+            {{- if or .Values.gitlab.rootPassword.value .Values.gitlab.rootPassword.existingSecret }}
+            - name: GITLAB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  {{- if .Values.gitlab.rootPassword.existingSecret }}
+                  name: {{ .Values.gitlab.rootPassword.existingSecret }}
+                  key: {{ .Values.gitlab.rootPassword.secretKey }}
+                  {{- else }}
+                  name: {{ include "gitlab-ce-ocp.fullname" . }}-root
+                  key: password
+                  {{- end }}
+            {{- end }}
+            {{- if .Values.externalServices.postgresql.enabled }}
+            - name: GITLAB_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.externalServices.postgresql.existingSecret }}
+                  key: {{ .Values.externalServices.postgresql.secretKey }}
+            {{- end }}
+            {{- if .Values.externalServices.redis.enabled }}
+            - name: GITLAB_REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.externalServices.redis.existingSecret }}
+                  key: {{ .Values.externalServices.redis.secretKey }}
+            {{- end }}
+            {{- if .Values.externalServices.objectStorage.enabled }}
+            - name: GITLAB_OBJSTORE_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.externalServices.objectStorage.existingSecret }}
+                  key: accesskey
+            - name: GITLAB_OBJSTORE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.externalServices.objectStorage.existingSecret }}
+                  key: secretkey
+            {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/opt/gitlab
+            - name: config
+              mountPath: /etc/gitlab
+            - name: logs
+              mountPath: /var/log/gitlab
+          {{- if .Values.probes.startup.enabled }}
+          startupProbe:
+            httpGet:
+              path: /-/health
+              port: http
+            initialDelaySeconds: {{ .Values.probes.startup.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.startup.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+          {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /-/health
+              port: http
+            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: /-/readiness
+              port: http
+            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        {{- if .Values.persistence.config.existingClaim }}
+        - name: config
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.config.existingClaim }}
+        {{- end }}
+        {{- if .Values.persistence.logs.existingClaim }}
+        - name: logs
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.logs.existingClaim }}
+        {{- end }}
+        {{- if .Values.persistence.data.existingClaim }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.data.existingClaim }}
+        {{- end }}
+  volumeClaimTemplates:
+    {{- if not .Values.persistence.data.existingClaim }}
+    - metadata:
+        name: data
+        labels:
+          {{- include "gitlab-ce-ocp.labels" . | nindent 10 }}
+      spec:
+        accessModes: [ "{{ .Values.persistence.data.accessMode }}" ]
+        {{- if .Values.persistence.data.storageClass }}
+        storageClassName: {{ .Values.persistence.data.storageClass }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.data.size }}
+    {{- end }}
+    {{- if not .Values.persistence.config.existingClaim }}
+    - metadata:
+        name: config
+        labels:
+          {{- include "gitlab-ce-ocp.labels" . | nindent 10 }}
+      spec:
+        accessModes: [ "{{ .Values.persistence.config.accessMode }}" ]
+        {{- if .Values.persistence.config.storageClass }}
+        storageClassName: {{ .Values.persistence.config.storageClass }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.config.size }}
+    {{- end }}
+    {{- if not .Values.persistence.logs.existingClaim }}
+    - metadata:
+        name: logs
+        labels:
+          {{- include "gitlab-ce-ocp.labels" . | nindent 10 }}
+      spec:
+        accessModes: [ "{{ .Values.persistence.logs.accessMode }}" ]
+        {{- if .Values.persistence.logs.storageClass }}
+        storageClassName: {{ .Values.persistence.logs.storageClass }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.logs.size }}
+    {{- end }}

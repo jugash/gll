@@ -1,0 +1,37 @@
+{{- if .Values.postgresql.enabled }}
+{{- /*
+PostgreSQL via CloudNativePG (Apache-2.0). Runs non-root under `restricted-v2`,
+handles arbitrary UIDs, and gives HA with a single `instances` change. Requires
+the CloudNativePG operator (OperatorHub, one-time cluster install).
+
+Exposes services: gitlab-postgresql-rw (primary), -ro (replicas), -r (any).
+The GitLab CR uses gitlab-postgresql-rw.
+*/ -}}
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: gitlab-postgresql
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "deps.labels" . | nindent 4 }}
+spec:
+  instances: {{ .Values.postgresql.instances }}
+  imageName: {{ .Values.postgresql.imageName }}
+  bootstrap:
+    initdb:
+      database: {{ .Values.postgresql.database }}
+      owner: {{ .Values.postgresql.username }}
+      secret:
+        name: gitlab-postgresql        # basic-auth secret: username + password
+      postInitSQL:
+        # GitLab requires these extensions.
+        - CREATE EXTENSION IF NOT EXISTS pg_trgm;
+        - CREATE EXTENSION IF NOT EXISTS btree_gist;
+  storage:
+    size: {{ .Values.postgresql.persistence.size }}
+    {{- with .Values.global.storageClass }}
+    storageClass: {{ . }}
+    {{- end }}
+  resources:
+    {{- toYaml .Values.postgresql.resources | nindent 4 }}
+{{- end }}

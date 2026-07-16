@@ -1,0 +1,72 @@
+{{- if .Values.openshift.route.enabled }}
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: {{ include "gitlab-ce-ocp.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gitlab-ce-ocp.labels" . | nindent 4 }}
+  {{- with .Values.openshift.route.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  host: {{ .Values.openshift.route.host }}
+  to:
+    kind: Service
+    name: {{ include "gitlab-ce-ocp.fullname" . }}
+    weight: 100
+  port:
+    targetPort: http
+  {{- with .Values.openshift.route.tls }}
+  tls:
+    termination: {{ .termination }}
+    insecureEdgeTerminationPolicy: {{ .insecureEdgeTerminationPolicy }}
+    {{- if .certificate }}
+    certificate: |
+      {{- .certificate | nindent 6 }}
+    {{- end }}
+    {{- if .key }}
+    key: |
+      {{- .key | nindent 6 }}
+    {{- end }}
+    {{- if .caCertificate }}
+    caCertificate: |
+      {{- .caCertificate | nindent 6 }}
+    {{- end }}
+  {{- end }}
+  wildcardPolicy: None
+{{- else if .Values.openshift.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "gitlab-ce-ocp.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gitlab-ce-ocp.labels" . | nindent 4 }}
+  {{- with .Values.openshift.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.openshift.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.openshift.ingress.host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "gitlab-ce-ocp.fullname" . }}
+                port:
+                  number: {{ .Values.service.httpPort }}
+  {{- if .Values.openshift.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.openshift.ingress.host }}
+      secretName: {{ .Values.openshift.ingress.tls.secretName }}
+  {{- end }}
+{{- end }}

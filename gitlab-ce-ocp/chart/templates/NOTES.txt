@@ -1,0 +1,40 @@
+
+GitLab CE has been deployed to namespace "{{ .Release.Namespace }}" as release "{{ .Release.Name }}".
+
+1. First boot takes 5–15 minutes (migrations + reconfigure). Watch progress:
+
+     oc rollout status statefulset/{{ include "gitlab-ce-ocp.fullname" . }} -n {{ .Release.Namespace }}
+     oc logs -f statefulset/{{ include "gitlab-ce-ocp.fullname" . }} -n {{ .Release.Namespace }}
+
+2. URL:
+{{- if .Values.openshift.route.enabled }}
+     {{ .Values.gitlab.externalUrl }}   (OpenShift Route: {{ .Values.openshift.route.host }})
+{{- else if .Values.openshift.ingress.enabled }}
+     {{ .Values.gitlab.externalUrl }}   (Ingress: {{ .Values.openshift.ingress.host }})
+{{- else }}
+     No Route/Ingress enabled — port-forward for testing:
+     oc port-forward svc/{{ include "gitlab-ce-ocp.fullname" . }} 8080:{{ .Values.service.httpPort }} -n {{ .Release.Namespace }}
+{{- end }}
+
+3. Sign in as "root".
+{{- if .Values.gitlab.rootPassword.existingSecret }}
+   Password is in secret "{{ .Values.gitlab.rootPassword.existingSecret }}".
+{{- else if .Values.gitlab.rootPassword.value }}
+   Password was set from your provided value.
+{{- else }}
+   Initial password (valid 24h) is auto-generated. Retrieve it with:
+     oc exec -it {{ include "gitlab-ce-ocp.fullname" . }}-0 -n {{ .Release.Namespace }} -- \
+       cat /etc/gitlab/initial_root_password
+{{- end }}
+
+{{- if .Values.backup.enabled }}
+
+4. Automated backups run on schedule "{{ .Values.backup.schedule }}". Run one now:
+     oc create job --from=cronjob/{{ include "gitlab-ce-ocp.fullname" . }}-backup manual-backup-$(date +%s) -n {{ .Release.Namespace }}
+{{- end }}
+
+WARNING: This is a single-pod Omnibus deployment. It is vertically scalable and
+resilient to node failure (data on PVCs, pod reschedules), but it is NOT
+horizontally highly-available. For zero-downtime HA, externalize Postgres/Redis/
+object storage and migrate to the GitLab Operator or cloud-native chart — see
+docs/deployment-approaches-tradeoffs.md.

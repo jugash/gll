@@ -1,0 +1,22 @@
+apiVersion: v2
+name: gitlab-deps-ocp
+description: |
+  In-cluster dependent services for a GitLab Operator deployment on OpenShift:
+  PostgreSQL, Redis (with optional Sentinel HA), and MinIO S3-compatible object
+  storage — plus the connection Secrets the GitLab custom resource consumes.
+  Deploy this FIRST, then apply the GitLab CR (../gitlab-cr.yaml) which points at
+  these services.
+type: application
+version: 1.0.0
+# Datastore stack: CloudNativePG (Postgres 16) + Valkey 8 + MinIO.
+appVersion: "cnpg-pg16-valkey8-minio"
+keywords:
+  - gitlab
+  - openshift
+  - postgresql
+  - redis
+  - minio
+  - dependencies
+maintainers:
+  - name: Platform Engineering
+    email: platform@example.com

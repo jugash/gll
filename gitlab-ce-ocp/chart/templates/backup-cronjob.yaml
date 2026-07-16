@@ -1,0 +1,45 @@
+{{- if .Values.backup.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "gitlab-ce-ocp.fullname" . }}-backup
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gitlab-ce-ocp.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.backup.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: {{ .Values.backup.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.backup.failedJobsHistoryLimit }}
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 10800
+      template:
+        metadata:
+          labels:
+            {{- include "gitlab-ce-ocp.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: backup
+        spec:
+          serviceAccountName: {{ include "gitlab-ce-ocp.serviceAccountName" . }}
+          restartPolicy: Never
+          containers:
+            - name: backup
+              image: registry.redhat.io/openshift4/ose-cli:latest
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -euo pipefail
+                  POD=$(oc get pods -n {{ .Release.Namespace }} \
+                    -l app.kubernetes.io/instance={{ .Release.Name }},app.kubernetes.io/name={{ include "gitlab-ce-ocp.name" . }} \
+                    -o jsonpath='{.items[0].metadata.name}')
+                  echo "Backing up GitLab in pod: $POD"
+                  # App data (repos, DB, uploads, LFS, artifacts...)
+                  oc exec -n {{ .Release.Namespace }} "$POD" -- \
+                    gitlab-backup create CRON=1
+                  # Config + secrets (gitlab-secrets.json, gitlab.rb) — required to restore.
+                  oc exec -n {{ .Release.Namespace }} "$POD" -- \
+                    tar czf /var/opt/gitlab/backups/etc-gitlab-$(date +%s).tar.gz -C /etc/gitlab .
+                  echo "Backup complete."
+{{- end }}
