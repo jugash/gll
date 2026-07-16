@@ -1,13 +1,13 @@
 {{- if .Values.redis.enabled }}
 {{- /*
-Single-primary Valkey (BSD-3, the open Redis fork) with password auth and
-persistence. Valkey writes only to its data dir, so it runs cleanly under
+Single-primary Redis/Valkey (engine selectable via redis.engine) with password
+auth and persistence. It writes only to its data dir, so it runs cleanly under
 `restricted-v2` with an arbitrary UID + fsGroup (no uid resolution needed).
 
 For Sentinel-based HA in-cluster, do NOT hand-roll a fragile Sentinel topology
-here — deploy HA Valkey via a Redis/Valkey operator (see installation-guide.md)
+here — deploy HA Redis/Valkey via a Redis/Valkey operator (see installation-guide.md)
 and set redis.sentinel.enabled=true so the GitLab CR is wired for Sentinel.
-Valkey is wire-compatible with Redis, so GitLab connects to it unchanged.
+Redis and Valkey are wire-compatible, so GitLab connects to either unchanged.
 */ -}}
 apiVersion: v1
 kind: Service
@@ -44,12 +44,12 @@ spec:
       securityContext:
         fsGroup: 1000
       containers:
-        - name: valkey
-          image: {{ .Values.redis.image }}
+        - name: redis
+          image: {{ include "deps.redisImage" . }}
           command:
-            - valkey-server
+            - {{ include "deps.redisServerBin" . }}
             - --requirepass
-            - $(VALKEY_PASSWORD)
+            - $(REDIS_PASSWORD)
             - --appendonly
             - "yes"
             - --dir
@@ -58,12 +58,12 @@ spec:
             - containerPort: 6379
               name: redis
           env:
-            - name: VALKEY_PASSWORD
+            - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef: { name: gitlab-redis, key: password }
           readinessProbe:
             exec:
-              command: ["/bin/sh","-c","valkey-cli -a \"$VALKEY_PASSWORD\" ping | grep -q PONG"]
+              command: ["/bin/sh","-c","{{ include "deps.redisCliBin" . }} -a \"$REDIS_PASSWORD\" ping | grep -q PONG"]
             initialDelaySeconds: 10
             periodSeconds: 10
           livenessProbe:

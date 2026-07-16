@@ -58,11 +58,19 @@ postgresql:
     size: 50Gi
 
 # -----------------------------------------------------------------------------
-# Redis — Valkey (BSD-3, the open-source Redis fork)
+# Redis / Valkey  (GitLab is wire-compatible with both)
 # -----------------------------------------------------------------------------
+# engine selects which server to run and which binaries the template calls:
+#   valkey -> valkey-server / valkey-cli   (BSD-3, permissive; default)
+#   redis  -> redis-server  / redis-cli    (Redis 8+ offers an AGPLv3 option)
+# Both run under OpenShift `restricted-v2` with an fsGroup (no uid resolution needed).
 redis:
   enabled: true
-  image: "valkey/valkey:8"
+  engine: valkey             # valkey | redis
+  # Leave `image` empty to use the engine default, or pin your own.
+  #   valkey default: valkey/valkey:8
+  #   redis default : redis:8   (AGPLv3-licensed; use redis:7.4 for the older BSD line)
+  image: ""
   # Password in secret `gitlab-redis` (key: password). Auto-generated if empty.
   password: ""
   # HA via Sentinel. The shipped template deploys a reliable single primary; set

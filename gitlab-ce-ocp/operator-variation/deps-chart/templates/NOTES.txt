@@ -6,7 +6,7 @@ In-cluster GitLab dependencies deployed to namespace "{{ .Release.Namespace }}":
 {{- else }}
   PostgreSQL : gitlab-postgresql:5432     (StatefulSet, sclorg image)
 {{- end }}
-  Redis      : gitlab-redis:6379          (Valkey)
+  Redis      : gitlab-redis:6379          ({{ .Values.redis.engine }})
   MinIO (S3) : gitlab-minio:9000          (console :9001)
 
 Secrets created for the GitLab CR to consume:

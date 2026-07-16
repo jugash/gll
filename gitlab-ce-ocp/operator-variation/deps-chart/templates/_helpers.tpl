@@ -24,6 +24,25 @@ first install by looking up any existing secret; otherwise use the provided valu
 {{- end -}}
 {{- end -}}
 
+{{/* Redis/Valkey engine helpers: image, server binary, cli binary. */}}
+{{- define "deps.redisImage" -}}
+{{- if .Values.redis.image -}}
+{{- .Values.redis.image -}}
+{{- else if eq .Values.redis.engine "redis" -}}
+redis:8
+{{- else -}}
+valkey/valkey:8
+{{- end -}}
+{{- end -}}
+
+{{- define "deps.redisServerBin" -}}
+{{- if eq .Values.redis.engine "redis" -}}redis-server{{- else -}}valkey-server{{- end -}}
+{{- end -}}
+
+{{- define "deps.redisCliBin" -}}
+{{- if eq .Values.redis.engine "redis" -}}redis-cli{{- else -}}valkey-cli{{- end -}}
+{{- end -}}
+
 {{- define "deps.redisPassword" -}}
 {{- if .Values.redis.password -}}
 {{- .Values.redis.password -}}
