@@ -17,7 +17,7 @@ common choice when you don't want a hard dependency on RDS/ElastiCache/S3.
 | Layer | Who runs it | Notes |
 |---|---|---|
 | GitLab app (Webservice, Sidekiq, Gitaly, Shell, Registry) | **Operator** via the `GitLab` CR | Multi-replica, rolling upgrades, OpenShift Routes + SCCs handled for you |
-| PostgreSQL | **deps-chart** | CloudNativePG `Cluster` — `instances: 1` (simple) → `3` (HA) |
+| PostgreSQL | **deps-chart** | StatefulSet (sclorg image) by default; `mode: cnpg` for HA |
 | Redis | **deps-chart** | Valkey single primary (default) or Sentinel HA (via Redis/Valkey operator) |
 | Object storage (MinIO) | **deps-chart** | S3 buckets for artifacts/LFS/uploads/packages/registry/backups |
 | Connection wiring | **deps-chart secrets** ⇄ **CR** | `gitlab-postgresql`, `gitlab-redis`, `gitlab-objectstore`, `gitlab-rails-storage` |
@@ -29,10 +29,11 @@ deps-chart creates them; the CR references them. Change one, change both.
 
 - **SCCs:** The Operator installs the GitLab application SCC bindings itself
   (`gitlab-app-nonroot` → `nonroot-v2`) — this is the whole reason to use the Operator on
-  OCP rather than the raw cloud-native chart. The **dependencies** (CloudNativePG, Valkey,
-  MinIO) all run as arbitrary non-root UIDs, so they satisfy the default `restricted-v2`
-  SCC with only an `fsGroup` — no custom SCC for the deps. CloudNativePG is itself an
-  OpenShift-certified operator that manages Postgres non-root by design.
+  OCP rather than the raw cloud-native chart. The **dependencies** (sclorg PostgreSQL,
+  Valkey, MinIO) all run as arbitrary non-root UIDs, so they satisfy the default
+  `restricted-v2` SCC with only an `fsGroup` — no custom SCC for the deps. The sclorg
+  Postgres image is Red Hat's OpenShift-oriented build (arbitrary-UID safe via nss_wrapper);
+  the plain `docker.io/postgres` image is not and would need `anyuid`.
 - **Ingress → Routes:** Disable the bundled `nginx-ingress` (it lacks a valid OCP SCC out
   of the box). The Operator exposes GitLab through OpenShift Routes. Bring your own TLS
   cert or use the router's default wildcard.
@@ -47,17 +48,18 @@ deps-chart creates them; the CR references them. Change one, change both.
 | Tier | Default (this chart) | Production HA upgrade |
 |---|---|---|
 | GitLab app | Multi-replica via CR (`minReplicas: 2`) | Already HA; tune replicas/HPA |
-| PostgreSQL | CloudNativePG, 1 instance | `postgresql.instances: 3` → replicas + auto-failover (no CR change) |
+| PostgreSQL | StatefulSet (sclorg), 1 instance | `postgresql.mode: cnpg` → CloudNativePG 3-node cluster w/ auto-failover |
 | Redis | Valkey single primary | Deploy Valkey/Redis operator (Sentinel); set `redis.sentinel.enabled: true` |
 | Object storage | Single MinIO | MinIO distributed mode, or switch to OpenShift Data Foundation (ODF/NooBaa) |
 | Gitaly | Single StatefulSet | Gitaly Cluster / Praefect (multi-node) — configure in the CR |
 
-**Honest note:** the deps-chart ships *reliable single-instance* datastores by default.
-Postgres already runs under CloudNativePG, so its HA upgrade is just `instances: 3` — no
-rebuild, same `-rw` service. For Redis, the chart does *not* hand-roll a fragile Sentinel
-topology; the correct in-cluster HA answer is a purpose-built Valkey/Redis operator, wired
-via `redis.sentinel.enabled` and a secret name. So the ladder is **single-instance deps →
-operator-run HA deps**, with the GitLab CR unchanged except for the Redis Sentinel block.
+**Honest note:** the deps-chart ships *reliable single-instance* datastores by default —
+Postgres as a plain StatefulSet, Redis as a single Valkey primary. Neither is HA on its
+own. The chart does *not* hand-roll fragile Patroni/Sentinel YAML; the correct in-cluster
+HA answer is purpose-built operators — CloudNativePG for Postgres (`postgresql.mode=cnpg`)
+and a Valkey/Redis operator for Redis (`redis.sentinel.enabled`). So the ladder is
+**single-instance StatefulSets → operator-run HA datastores**, wired via a values flag and
+a secret/host name rather than a rebuild.
 
 **Why not Bitnami?** Bitnami's public catalog was deleted on 2025-09-29; versioned tags
 now live in the unmaintained `bitnamilegacy` repo and hardened production images require a

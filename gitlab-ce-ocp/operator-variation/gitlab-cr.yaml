@@ -42,10 +42,11 @@ spec:
             enabled: true
             # secretName: gitlab-tls   # supply your own cert, or use the router default
 
-        # --- In-cluster PostgreSQL via CloudNativePG (deps-chart) ---
-        # CNPG exposes a read-write service named <cluster>-rw.
+        # --- In-cluster PostgreSQL (deps-chart, StatefulSet mode) ---
+        # StatefulSet service is `gitlab-postgresql`. If you switch deps-chart to
+        # postgresql.mode=cnpg, change this host to `gitlab-postgresql-rw`.
         psql:
-          host: gitlab-postgresql-rw.gitlab.svc.cluster.local
+          host: gitlab-postgresql.gitlab.svc.cluster.local
           port: 5432
           database: gitlabhq_production
           username: gitlab

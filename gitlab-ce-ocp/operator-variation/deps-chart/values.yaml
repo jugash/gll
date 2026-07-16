@@ -23,20 +23,34 @@ global:
   storageClass: ""          # "" = cluster default; use RWO block (e.g. ODF Ceph RBD)
 
 # -----------------------------------------------------------------------------
-# PostgreSQL — CloudNativePG (Apache-2.0)
+# PostgreSQL — in-cluster StatefulSet (default) or CloudNativePG (optional HA)
 # -----------------------------------------------------------------------------
-# CNPG is the OpenShift-native, arbitrary-UID-friendly way to run Postgres. It is
-# used for BOTH the simple and HA cases — just change `instances`. Requires the
-# CloudNativePG operator (install once from OperatorHub). The CR points at the
-# CNPG read-write service `gitlab-postgresql-rw`.
+# Default `mode: statefulset` runs a single-primary Postgres StatefulSet using the
+# Red Hat sclorg image, which is purpose-built to run under OpenShift's default
+# `restricted-v2` SCC with an arbitrary UID (the official docker `postgres` image
+# does NOT — it fails UID resolution). It's maintained and free.
+#   CR points at service `gitlab-postgresql`.
+#
+# Optional `mode: cnpg` emits a CloudNativePG Cluster instead for HA with
+# auto-failover (requires the CloudNativePG operator). CR points at
+# `gitlab-postgresql-rw`. See docs for the switch.
 postgresql:
   enabled: true
-  instances: 1               # 1 = simple; set 3 for HA (primary + 2 replicas, auto-failover)
-  imageName: "ghcr.io/cloudnative-pg/postgresql:16"
+  mode: statefulset          # statefulset | cnpg
+  # StatefulSet mode image — OpenShift arbitrary-UID friendly, free.
+  # Alternatives: registry.redhat.io/rhel9/postgresql-16 (supported, needs RH pull secret).
+  image: "quay.io/sclorg/postgresql-16-c9s:latest"
   database: "gitlabhq_production"
   username: "gitlab"
-  # Password in secret `gitlab-postgresql` (keys: username, password). Auto-generated if empty.
+  # App-user password in secret `gitlab-postgresql` (key: password). Auto-gen if empty.
   password: ""
+  # Superuser password (key: postgres-password) — used to create GitLab's required
+  # extensions. Auto-generated if empty.
+  adminPassword: ""
+  # CloudNativePG-only settings (mode: cnpg)
+  cnpg:
+    instances: 3             # 1 primary + 2 replicas w/ automatic failover
+    imageName: "ghcr.io/cloudnative-pg/postgresql:16"
   resources:
     requests: { cpu: "1", memory: "2Gi" }
     limits:   { cpu: "2", memory: "4Gi" }

@@ -1,23 +1,28 @@
 # Installation & Operations — Operator variation
 
 Deploy GitLab CE on OpenShift via the GitLab Operator with in-cluster datastores:
-**CloudNativePG** (PostgreSQL), **Valkey** (Redis), and **MinIO** (object storage).
+**PostgreSQL** (StatefulSet), **Valkey** (Redis), and **MinIO** (object storage).
 
 > **Image/license note.** These replace the previously-common Bitnami images, whose
 > public catalog was deleted on 2025-09-29 (versioned tags moved to the unmaintained
 > `bitnamilegacy` repo; hardened images are now paid Bitnami Secure Images). The stack
-> here is license-clean and actively maintained: CloudNativePG (Apache-2.0), Valkey
+> here is license-clean and actively maintained: Red Hat sclorg PostgreSQL, Valkey
 > (BSD-3), MinIO (AGPL-3.0). For production object storage, prefer OpenShift Data
 > Foundation over MinIO.
+
+> **Postgres image choice.** The default StatefulSet uses `quay.io/sclorg/postgresql-16-c9s`,
+> which is built to run under OpenShift's arbitrary-UID `restricted-v2` SCC. The plain
+> `docker.io/postgres` image does **not** (it fails UID resolution), so don't swap it in
+> without a UID-tolerant image. For HA, switch to `postgresql.mode=cnpg` (see §5).
 
 ---
 
 ## 1. Prerequisites
 
-- OpenShift 4.12+, `oc` logged in as **cluster-admin** (required to install operators).
-- **The CloudNativePG operator installed** (OperatorHub → "CloudNativePG") — Postgres is
-  deployed as a CNPG `Cluster`. One-time cluster install.
+- OpenShift 4.12+, `oc` logged in as **cluster-admin** (required to install the Operator).
 - **Helm 3.8+** (for the deps-chart).
+- *(Only if you choose `postgresql.mode=cnpg` for HA Postgres:)* the CloudNativePG
+  operator installed from OperatorHub. Not needed for the default StatefulSet mode.
 - A **RWO block StorageClass** (e.g. ODF Ceph RBD). Check: `oc get storageclass`.
 - DNS: an apps wildcard/host pointing at your OCP router, e.g. `*.apps.ocp.example.com`.
 - Node capacity: the microservice tier + datastores need materially more than the Omnibus
@@ -63,8 +68,9 @@ oc get pods -n gitlab -l app.kubernetes.io/part-of=gitlab-deps -w
 ```
 
 This creates:
-- Services `gitlab-postgresql-rw:5432` (CNPG), `gitlab-redis:6379` (Valkey), `gitlab-minio:9000`
+- Services `gitlab-postgresql:5432` (StatefulSet), `gitlab-redis:6379` (Valkey), `gitlab-minio:9000`
 - Secrets `gitlab-postgresql`, `gitlab-redis`, `gitlab-objectstore`, `gitlab-rails-storage`
+- A Job that creates GitLab's required Postgres extensions (`pg_trgm`, `btree_gist`)
 - MinIO buckets: artifacts, lfs, uploads, packages, registry, backups
 
 Passwords are auto-generated if left blank. Read them with:
@@ -109,14 +115,17 @@ oc get secret gitlab-gitlab-initial-root-password -n gitlab \
 
 ## 5. Upgrading to in-cluster HA datastores
 
-### PostgreSQL → 3-node CloudNativePG
-Postgres is already CNPG; scaling to HA is just more instances (rolling, no data migration):
+### PostgreSQL → CloudNativePG (HA)
+The default is a single StatefulSet. For HA, install the CloudNativePG operator
+(OperatorHub), then switch modes:
 ```bash
 helm upgrade deps ./deps-chart -n gitlab --reuse-values \
-  --set postgresql.instances=3
+  --set postgresql.mode=cnpg --set postgresql.cnpg.instances=3
 ```
-CNPG adds replicas with streaming replication and automatic failover behind the same
-`gitlab-postgresql-rw` service — the GitLab CR needs no change.
+This replaces the StatefulSet with a 3-node CNPG `Cluster` (streaming replication +
+automatic failover). Its read-write service is `gitlab-postgresql-rw`, so update the CR's
+`global.psql.host` to `gitlab-postgresql-rw`. Migrate existing data with
+`pg_dump`/`pg_restore` if the StatefulSet already held data.
 
 ### Redis/Valkey → Sentinel HA
 Deploy HA Valkey with a purpose-built Redis/Valkey operator (Sentinel, 3 nodes), then:
@@ -157,8 +166,9 @@ Enable the scheduled backup CronJob in the CR under `gitlab.toolbox.backups.cron
 | Redis auth failures | `global.redis.auth` secret/key mismatch | Match deps-chart `gitlab-redis` secret |
 | Object storage 403/timeouts | MinIO endpoint/keys wrong in `gitlab-rails-storage` | Check the `connection` secret + MinIO service |
 | nginx-ingress pod CrashLoop | Bundled ingress on OCP (no SCC) | Keep it disabled; use Routes |
-| CNPG Cluster stuck `Setting up primary` | CNPG operator not installed | Install CloudNativePG from OperatorHub |
-| Postgres missing extensions | postInitSQL not applied | CNPG runs `pg_trgm`,`btree_gist` via `postInitSQL`; verify Cluster spec |
+| Postgres pod CrashLoop as arbitrary UID | Swapped in `docker.io/postgres` (no UID tolerance) | Use the sclorg image (default) or another arbitrary-UID-safe image |
+| Postgres missing extensions | extensions Job failed | Check `job/gitlab-postgresql-extensions` logs; it creates `pg_trgm`,`btree_gist` |
+| CNPG Cluster stuck (cnpg mode) | CNPG operator not installed | Install CloudNativePG from OperatorHub, or use default StatefulSet mode |
 
 ---
 

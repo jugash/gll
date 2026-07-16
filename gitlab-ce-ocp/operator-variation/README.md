@@ -14,7 +14,7 @@ supplies them **inside the cluster** — so you get the Operator's OpenShift-nat
 active/active, zero-downtime-upgrade model, without depending on cloud-managed RDS/
 ElastiCache/S3.
 
-The datastores use **license-clean, maintained images** — CloudNativePG (Apache-2.0),
+The datastores use **license-clean, maintained images** — Red Hat sclorg PostgreSQL,
 Valkey (BSD-3), MinIO (AGPL-3.0) — deliberately *not* Bitnami, whose public catalog was
 deleted on 2025-09-29 and whose production images now require a paid subscription.
 
@@ -29,8 +29,8 @@ deleted on 2025-09-29 and whose production images now require a paid subscriptio
    │                                              │                         │
    │            ┌─────────────────────────────────┼───────────────┐        │
    │            ▼                    ▼             ▼                ▼        │
-   │   gitlab-postgresql-rw   gitlab-redis   gitlab-minio    gitlab-rails-  │
-   │   (CloudNativePG)        (Valkey)       (S3 buckets)    storage secret │
+   │   gitlab-postgresql      gitlab-redis   gitlab-minio    gitlab-rails-  │
+   │   (StatefulSet)          (Valkey)       (S3 buckets)    storage secret │
    │        ▲ deps-chart ────────────────────────────────────────┘         │
    └────────────────────────────────────────────────────────────────────────┘
 ```
@@ -56,7 +56,7 @@ operator-variation/
 |---|---|---|
 | GitLab runtime | 1 Omnibus pod | Operator-managed microservices, multi-replica |
 | HA (app tier) | No (brief outage on upgrade) | Yes (active/active, rolling upgrades) |
-| Datastores | Bundled in the pod | Separate in-cluster: CloudNativePG, Valkey, MinIO |
+| Datastores | Bundled in the pod | Separate in-cluster: Postgres StatefulSet, Valkey, MinIO |
 | OpenShift SCC | Custom SCC for the Omnibus pod | Operator handles GitLab SCCs; deps use `restricted-v2` |
 | Complexity | Low | Medium–High |
 | Best for | Fast, cheap, team-scale | HA without external managed datastores |
@@ -64,8 +64,8 @@ operator-variation/
 ## Quick start
 
 ```bash
-# 0. Install the GitLab Operator AND the CloudNativePG operator (cluster-admin)
-#    — see installation-guide.md
+# 0. Install the GitLab Operator via OLM (cluster-admin) — see installation-guide.md
+#    (CloudNativePG operator only needed if you opt into postgresql.mode=cnpg)
 # 1. Deploy in-cluster dependencies
 oc new-project gitlab
 helm install deps ./deps-chart -n gitlab

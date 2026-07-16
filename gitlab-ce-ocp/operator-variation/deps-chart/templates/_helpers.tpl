@@ -15,6 +15,15 @@ first install by looking up any existing secret; otherwise use the provided valu
 {{- end -}}
 {{- end -}}
 
+{{- define "deps.postgresAdminPassword" -}}
+{{- if .Values.postgresql.adminPassword -}}
+{{- .Values.postgresql.adminPassword -}}
+{{- else -}}
+{{- $s := lookup "v1" "Secret" .Release.Namespace "gitlab-postgresql" -}}
+{{- if and $s (index $s.data "postgres-password") -}}{{ index $s.data "postgres-password" | b64dec }}{{- else -}}{{ randAlphaNum 24 }}{{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "deps.redisPassword" -}}
 {{- if .Values.redis.password -}}
 {{- .Values.redis.password -}}

@@ -1,7 +1,11 @@
 
 In-cluster GitLab dependencies deployed to namespace "{{ .Release.Namespace }}":
 
-  PostgreSQL : gitlab-postgresql-rw:5432  (CloudNativePG, instances: {{ .Values.postgresql.instances }})
+{{- if eq .Values.postgresql.mode "cnpg" }}
+  PostgreSQL : gitlab-postgresql-rw:5432  (CloudNativePG, instances: {{ .Values.postgresql.cnpg.instances }})
+{{- else }}
+  PostgreSQL : gitlab-postgresql:5432     (StatefulSet, sclorg image)
+{{- end }}
   Redis      : gitlab-redis:6379          (Valkey)
   MinIO (S3) : gitlab-minio:9000          (console :9001)
 
@@ -19,10 +23,13 @@ NEXT STEPS
   3. Watch the Operator reconcile GitLab:
        oc get gitlab -n {{ .Release.Namespace }} -w
 
-NOTE: Datastores use license-clean images (CloudNativePG / Valkey / MinIO), not
-Bitnami. Defaults are single-instance (reliable, simple). For production HA set
-postgresql.instances=3 and deploy HA Valkey via a Redis/Valkey operator, then set
-redis.sentinel.enabled=true. See docs/installation-guide.md.
+NOTE: Datastores use license-clean images (sclorg Postgres / Valkey / MinIO), not
+Bitnami. Defaults are single-instance (reliable, simple). For production HA switch
+postgresql.mode=cnpg (needs the CloudNativePG operator) and deploy HA Valkey via a
+Redis/Valkey operator, then set redis.sentinel.enabled=true. See
+docs/installation-guide.md.
+{{- if eq .Values.postgresql.mode "cnpg" }}
 
-PREREQUISITE: the CloudNativePG operator must be installed (OperatorHub) before
-this chart, since PostgreSQL is a CNPG Cluster resource.
+PREREQUISITE: the CloudNativePG operator must be installed (OperatorHub) — this
+release is running in cnpg mode.
+{{- end }}

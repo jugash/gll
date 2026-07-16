@@ -1,12 +1,7 @@
 {{- if .Values.postgresql.enabled }}
-{{- /*
-PostgreSQL via CloudNativePG (Apache-2.0). Runs non-root under `restricted-v2`,
-handles arbitrary UIDs, and gives HA with a single `instances` change. Requires
-the CloudNativePG operator (OperatorHub, one-time cluster install).
-
-Exposes services: gitlab-postgresql-rw (primary), -ro (replicas), -r (any).
-The GitLab CR uses gitlab-postgresql-rw.
-*/ -}}
+{{- if eq .Values.postgresql.mode "cnpg" }}
+{{- /* Optional HA path: CloudNativePG Cluster (requires the CNPG operator).
+       CR host becomes gitlab-postgresql-rw. */ -}}
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
@@ -15,16 +10,15 @@ metadata:
   labels:
     {{- include "deps.labels" . | nindent 4 }}
 spec:
-  instances: {{ .Values.postgresql.instances }}
-  imageName: {{ .Values.postgresql.imageName }}
+  instances: {{ .Values.postgresql.cnpg.instances }}
+  imageName: {{ .Values.postgresql.cnpg.imageName }}
   bootstrap:
     initdb:
       database: {{ .Values.postgresql.database }}
       owner: {{ .Values.postgresql.username }}
       secret:
-        name: gitlab-postgresql        # basic-auth secret: username + password
+        name: gitlab-postgresql
       postInitSQL:
-        # GitLab requires these extensions.
         - CREATE EXTENSION IF NOT EXISTS pg_trgm;
         - CREATE EXTENSION IF NOT EXISTS btree_gist;
   storage:
@@ -34,4 +28,126 @@ spec:
     {{- end }}
   resources:
     {{- toYaml .Values.postgresql.resources | nindent 4 }}
+{{- else }}
+{{- /*
+Default: single-primary StatefulSet using the Red Hat sclorg PostgreSQL image,
+which runs cleanly under OpenShift `restricted-v2` with an arbitrary UID.
+CR host is gitlab-postgresql.
+*/ -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitlab-postgresql
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "deps.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  selector: { app: gitlab-postgresql }
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: gitlab-postgresql
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "deps.labels" . | nindent 4 }}
+spec:
+  serviceName: gitlab-postgresql
+  replicas: 1
+  selector:
+    matchLabels: { app: gitlab-postgresql }
+  template:
+    metadata:
+      labels:
+        app: gitlab-postgresql
+        {{- include "deps.labels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: postgresql
+          image: {{ .Values.postgresql.image }}
+          ports:
+            - containerPort: 5432
+              name: postgres
+          env:
+            - name: POSTGRESQL_USER
+              value: {{ .Values.postgresql.username | quote }}
+            - name: POSTGRESQL_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: gitlab-postgresql, key: password }
+            - name: POSTGRESQL_DATABASE
+              value: {{ .Values.postgresql.database | quote }}
+            - name: POSTGRESQL_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: gitlab-postgresql, key: postgres-password }
+          readinessProbe:
+            exec:
+              command: ["/usr/bin/pg_isready","-h","127.0.0.1","-U","{{ .Values.postgresql.username }}","-d","{{ .Values.postgresql.database }}"]
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: { port: 5432 }
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          resources:
+            {{- toYaml .Values.postgresql.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/pgsql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with .Values.global.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.postgresql.persistence.size }}
+---
+{{- /* GitLab requires the pg_trgm and btree_gist extensions in its database.
+       The gitlab app user is not a superuser, so create them as postgres. */ -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gitlab-postgresql-extensions
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "deps.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 10
+  template:
+    metadata:
+      labels: { app: gitlab-postgresql-extensions }
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: psql
+          image: {{ .Values.postgresql.image }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              until pg_isready -h gitlab-postgresql -U postgres; do
+                echo "waiting for postgresql..."; sleep 5
+              done
+              PGPASSWORD="$POSTGRESQL_ADMIN_PASSWORD" psql -h gitlab-postgresql -U postgres \
+                -d {{ .Values.postgresql.database }} \
+                -c "CREATE EXTENSION IF NOT EXISTS pg_trgm; CREATE EXTENSION IF NOT EXISTS btree_gist;"
+              echo "extensions ready"
+          env:
+            - name: POSTGRESQL_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: gitlab-postgresql, key: postgres-password }
+{{- end }}
 {{- end }}
