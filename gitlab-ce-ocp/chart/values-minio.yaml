@@ -1,0 +1,75 @@
+# =============================================================================
+# values-minio.yaml — GitLab CE (Omnibus chart) with object storage on a
+# LOCAL S3 endpoint backed by MinIO
+# =============================================================================
+# Use this overlay when GitLab's object storage (artifacts, LFS, uploads,
+# packages, backups) should live in a MinIO S3 bucket rather than on the pod PVC.
+# PostgreSQL and Redis remain bundled inside the Omnibus container; only object
+# storage is externalized to MinIO.
+#
+# MinIO is S3/AWS-compatible, so provider is "AWS" and an explicit `endpoint` is
+# set. When an endpoint is present the chart automatically enables path-style
+# addressing (required by MinIO) in the generated gitlab.rb.
+#
+# ---------------------------------------------------------------------------
+# 1. Point `endpoint` at your MinIO:
+#      - In-cluster MinIO from the operator-variation deps-chart:
+#          http://gitlab-minio.gitlab.svc.cluster.local:9000
+#      - A MinIO you run elsewhere on the network / locally:
+#          http://minio.mylab.local:9000   (or the reachable host:port)
+#    Use https:// if MinIO is served over TLS.
+#
+# 2. Create the credentials secret (keys MUST be `accesskey` / `secretkey`):
+#      oc create secret generic gitlab-objectstore \
+#        --from-literal=accesskey='<minio-access-key>' \
+#        --from-literal=secretkey='<minio-secret-key>' -n gitlab
+#
+# 3. Pre-create the buckets in MinIO (mc example):
+#      mc mb local/gitlab-artifacts local/gitlab-lfs local/gitlab-uploads \
+#             local/gitlab-packages local/gitlab-backups
+#
+# 4. Install/upgrade:
+#      helm upgrade --install gitlab ./chart -n gitlab -f chart/values-minio.yaml
+# =============================================================================
+
+image:
+  tag: "18.8.4-ce.0"
+
+gitlab:
+  externalUrl: "https://gitlab.apps.ocp.example.com"
+
+openshift:
+  route:
+    enabled: true
+    host: "gitlab.apps.ocp.example.com"
+    tls:
+      termination: edge
+      insecureEdgeTerminationPolicy: Redirect
+
+# PostgreSQL and Redis stay bundled in the Omnibus container.
+externalServices:
+  postgresql:
+    enabled: false
+  redis:
+    enabled: false
+
+  # --- Local S3 backed by MinIO ---
+  objectStorage:
+    enabled: true
+    provider: "AWS"            # MinIO speaks the AWS S3 API
+    region: "us-east-1"        # arbitrary for MinIO, but must be set
+    # Local MinIO S3 endpoint. Presence of `endpoint` turns on path-style addressing.
+    endpoint: "http://gitlab-minio.gitlab.svc.cluster.local:9000"
+    existingSecret: "gitlab-objectstore"   # keys: accesskey, secretkey
+    buckets:
+      artifacts: "gitlab-artifacts"
+      lfs: "gitlab-lfs"
+      uploads: "gitlab-uploads"
+      packages: "gitlab-packages"
+      backups: "gitlab-backups"
+
+# Nightly backups will stream to the MinIO `backups` bucket (see backup section
+# in values.yaml). Keep the PVC sizes modest since bulk data now lives in MinIO.
+persistence:
+  data:
+    size: 50Gi

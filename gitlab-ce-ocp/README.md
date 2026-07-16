@@ -17,6 +17,7 @@ gitlab-ce-ocp/
     ├── Chart.yaml
     ├── values.yaml                            ← Phase 1: bundled, self-contained
     ├── values-production-ha.yaml              ← Phase 2: external HA datastores
+    ├── values-minio.yaml                      ← object storage on a local MinIO S3 endpoint
     └── templates/                             ← StatefulSet, Route, dedicated SCC+RBAC, Service,
                                                   ConfigMap, Secret, backup CronJob, PDB, NetworkPolicy
 ```
