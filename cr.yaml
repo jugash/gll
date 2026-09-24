@@ -1,0 +1,341 @@
+# OpenShift GitOps / Argo CD HA and scalability baseline
+#
+# IMPORTANT:
+# - These are starting-point CRs, not a drop-in replacement for your existing CRs.
+# - Replace metadata.namespace and any existing configuration with the values used in your platform.
+# - Preserve your existing RBAC, SSO, sourceNamespaces, repositories, projects, custom CAs,
+#   notifications, resource customizations, etc. The examples below deliberately focus on
+#   HA/scalability settings discussed in the design.
+# - The CR schema used below is argoproj.io/v1beta1, matching the current Argo CD Operator API.
+#
+# Current design assumptions:
+#   CENTRAL: one infra-owned Argo CD that manages the management cluster plus multiple hosted clusters.
+#            Controller sharding is useful here because there are multiple destination clusters.
+#   LOCAL:   one application-team Argo CD that manages resources only in its local OpenShift cluster.
+#            Do NOT use additional controller replicas as an application-level scaling mechanism here;
+#            controller sharding is destination-cluster based, not application based.
+#
+# Tuning philosophy:
+#   1. Make stateless front-end components HA: server and repo-server = 3 replicas.
+#   2. Make Redis HA: .spec.ha.enabled = true.
+#   3. Increase controller concurrency rather than controller replicas for the single-cluster LOCAL Argo.
+#   4. Increase repo-server replicas and manifest-generation concurrency for Helm-heavy workloads.
+#   5. Treat processor/parallelism values as starting points and tune from metrics/API-server load.
+---
+apiVersion: argoproj.io/v1beta1
+kind: ArgoCD
+metadata:
+  name: central-infra-argo                         # CHANGE only if your existing central ArgoCD has another name.
+  namespace: openshift-gitops-infra                # CHANGE to the namespace containing the existing central/infrastructure ArgoCD.
+spec:
+  # ---------------------------------------------------------------------------
+  # Redis HA
+  # ---------------------------------------------------------------------------
+  ha:
+    # RECOMMENDED CHANGE: enable Redis HA.
+    # This causes the operator to deploy the HA Redis topology instead of a single
+    # Redis instance, removing the single-pod Redis availability bottleneck.
+    # Do not add an old redisProxy image/version here unless you have a specific
+    # compatibility requirement; allow the installed OpenShift GitOps operator to
+    # choose the supported image versions for your release.
+    enabled: true
+
+    # OPTIONAL RECOMMENDED CHANGE: give the HA Redis proxy explicit resources if
+    # your current defaults are too small. Start conservatively and validate with
+    # CPU/memory metrics. This applies to the HA component; when HA is enabled,
+    # .spec.redis.resources is not the setting to use for the HA Redis topology.
+    resources:
+      requests:
+        cpu: 250m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+  # ---------------------------------------------------------------------------
+  # Application Controller
+  # ---------------------------------------------------------------------------
+  controller:
+    processors:
+      # RECOMMENDED CHANGE: raise status processors from the typical default.
+      # Central Argo observes more than one destination cluster (management +
+      # hosted clusters), so additional status-processing concurrency can reduce
+      # reconciliation backlog. 40 is a starting point, not a universal optimum.
+      status: 40
+
+      # RECOMMENDED CHANGE: increase operation processors.
+      # This increases the number of Applications whose sync operations can be
+      # processed concurrently. It does NOT make one individual sync intrinsically
+      # faster. 20 is a reasonable starting point for a moderately busy central Argo.
+      operation: 20
+
+    # RECOMMENDED CHANGE: increase the number of concurrent kubectl/API operations.
+    # This is independent of operation processors. It controls the number of resource
+    # operations that the controller may have in flight. 30 is intentionally moderate;
+    # increase only after confirming that the OpenShift API server, admission webhooks,
+    # and managed controllers have spare capacity.
+    parallelismLimit: 30
+
+    resources:
+      # RECOMMENDED CHANGE: give the controller enough CPU to actually use the added
+      # concurrency. These are starting values for a central infrastructure Argo and
+      # should be validated against CPU throttling and memory usage.
+      requests:
+        cpu: "2"
+        memory: 4Gi
+      limits:
+        cpu: "4"
+        memory: 8Gi
+
+    # RECOMMENDED CHANGE: enable controller metrics scraping if it is not already
+    # enabled by your platform. Keep your existing monitoring stack if already managed
+    # elsewhere; this setting asks the operator to expose the ServiceMonitor.
+    metrics:
+      interval: 30s
+      scrapeTimeout: 10s
+
+    sharding:
+      # RECOMMENDED CHANGE for CENTRAL only: enable controller sharding because this
+      # Argo manages multiple destination clusters. Shards distribute DESTINATION
+      # CLUSTERS between controller instances. They do not divide Applications in a
+      # single destination cluster between replicas.
+      enabled: true
+
+      # RECOMMENDED CHANGE for CENTRAL only: three controller shards gives a basic
+      # distribution across three failure domains/pods and can materially reduce
+      # pressure when several hosted clusters are being reconciled. Increase later
+      # based on the number of managed clusters and observed controller load.
+      replicas: 3
+
+      # OPTIONAL: use consistent hashing when supported by your installed operator.
+      # It generally reduces unnecessary cluster movement when the shard count changes.
+      algorithm: consistent-hashing
+
+  # ---------------------------------------------------------------------------
+  # Repo Server
+  # ---------------------------------------------------------------------------
+  repo:
+    # RECOMMENDED CHANGE: run three repo-server replicas.
+    # Repo-server is stateless and performs manifest generation (including Helm).
+    # Multiple replicas allow several manifest-generation requests to be handled in
+    # parallel and avoid a single repo-server pod becoming an availability bottleneck.
+    replicas: 3
+
+    resources:
+      # RECOMMENDED CHANGE: explicitly reserve more resources than the small default
+      # sizing for a central instance. Helm/template generation can be memory intensive.
+      # Adjust after observing CPU, RSS and OOM/throttling behaviour.
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: "2"
+        memory: 4Gi
+
+    # RECOMMENDED CHANGE: expose repo-server metrics. One key metric to inspect is
+    # repo parallelism wait time, which shows time spent waiting for manifest-generation
+    # concurrency rather than actually rendering manifests.
+    metrics:
+      interval: 30s
+      scrapeTimeout: 10s
+
+  # ---------------------------------------------------------------------------
+  # Argo CD Server
+  # ---------------------------------------------------------------------------
+  server:
+    # RECOMMENDED CHANGE: three server replicas.
+    # The server is stateless; replicas improve UI/API availability and allow the
+    # Service/Route to distribute client traffic. This does not increase controller
+    # reconciliation capacity.
+    replicas: 3
+
+    resources:
+      # RECOMMENDED CHANGE: give the stateless API/UI tier explicit resources.
+      # This is mainly an availability/latency safeguard rather than the first lever
+      # for sync speed.
+      requests:
+        cpu: 250m
+        memory: 256Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
+
+    metrics:
+      interval: 30s
+      scrapeTimeout: 10s
+
+  # ---------------------------------------------------------------------------
+  # Workload status monitoring
+  # ---------------------------------------------------------------------------
+  monitoring:
+    # RECOMMENDED CHANGE: enable the OpenShift GitOps monitoring configuration when
+    # you want the operator to create the supported ServiceMonitor/PrometheusRule
+    # resources. If your platform already manages these separately, retain your
+    # existing setup instead of duplicating rules.
+    enabled: true
+
+---
+apiVersion: argoproj.io/v1beta1
+kind: ArgoCD
+metadata:
+  name: local-argo                                # CHANGE only if your existing local ArgoCD has another name.
+  namespace: openshift-gitops-apps                # CHANGE to the namespace containing the existing application/local ArgoCD.
+spec:
+  # ---------------------------------------------------------------------------
+  # Redis HA
+  # ---------------------------------------------------------------------------
+  ha:
+    # RECOMMENDED CHANGE: enable Redis HA for the local application Argo as well.
+    # This protects Argo's shared Redis dependency from becoming the single remaining
+    # control-plane failure point after server/repo-server are replicated.
+    enabled: true
+
+    # OPTIONAL RECOMMENDED CHANGE: explicit resources for the HA Redis component.
+    # Start with these values and validate actual consumption.
+    resources:
+      requests:
+        cpu: 250m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+  # ---------------------------------------------------------------------------
+  # Application Controller -- IMPORTANT LOCAL-ARGO DIFFERENCE
+  # ---------------------------------------------------------------------------
+  controller:
+    processors:
+      # RECOMMENDED CHANGE: substantially increase status-processing concurrency
+      # because this Argo is the single reconciler for many Applications in ONE
+      # destination cluster. 50 is a deliberately higher starting point for a busy
+      # application Argo. Compare queue depth and CPU before increasing further.
+      status: 50
+
+      # RECOMMENDED CHANGE: increase operation-processing concurrency.
+      # This is the first controller setting I would test for your reported case where
+      # application teams have many concurrent deployments. 30 allows more syncs to
+      # progress concurrently, provided the target API server and workloads can cope.
+      operation: 30
+
+    # RECOMMENDED CHANGE: raise the concurrent Kubernetes-operation limit.
+    # Start at 40 rather than immediately going very high. If the API server, admission
+    # webhooks or application operators become saturated, back this down. This limit
+    # affects aggregate resource operations across the controller, not one sync only.
+    parallelismLimit: 40
+
+    resources:
+      # RECOMMENDED CHANGE: give the single local controller enough CPU/memory to
+      # sustain the increased concurrency. A busy application Argo with many resources
+      # can have a substantially larger live-state cache than a small instance.
+      requests:
+        cpu: "4"
+        memory: 8Gi
+      limits:
+        cpu: "8"
+        memory: 16Gi
+
+    metrics:
+      # RECOMMENDED CHANGE: collect controller metrics at a predictable interval so
+      # the concurrency tuning can be measured. In particular, monitor application
+      # queue/processing durations, sync durations, controller CPU/memory and API
+      # request behaviour before/after changing these values.
+      interval: 30s
+      scrapeTimeout: 10s
+
+    sharding:
+      # IMPORTANT: leave controller sharding OFF for the single-cluster local Argo.
+      # Increasing replicas here is NOT application-level horizontal scaling: the
+      # replicas/shards are intended to partition destination clusters. Because every
+      # local Application points to this same cluster, extra replicas do not provide
+      # the Team-A/Team-B/Team-C distribution you would get from separate Argo CD
+      # instances. Keep one controller and scale its concurrency instead.
+      enabled: false
+
+  # ---------------------------------------------------------------------------
+  # Repo Server -- likely very important for the 30-min deployment case
+  # ---------------------------------------------------------------------------
+  repo:
+    # RECOMMENDED CHANGE: three repo-server replicas.
+    # Manifest generation is separate from controller reconciliation. Multiple
+    # replicas prevent a single Helm-heavy manifest-generation process from becoming
+    # a bottleneck and also improve availability during node/pod failures.
+    replicas: 3
+
+    resources:
+      # RECOMMENDED CHANGE: explicitly allocate more resources for Helm-heavy workloads.
+      # Start here, then inspect actual CPU/RSS. Increase memory before CPU if Helm/plugin
+      # generation is memory-bound or pods approach their memory limit.
+      requests:
+        cpu: "1"
+        memory: 2Gi
+      limits:
+        cpu: "4"
+        memory: 6Gi
+
+    metrics:
+      # RECOMMENDED CHANGE: enable repo-server metrics. For your specific 30-minute vs
+      # 10-minute Helm comparison, inspect the repo-server parallelism wait metric and
+      # manifest-generation duration. A high wait time indicates queueing before Helm
+      # actually runs; a high generation duration points toward Helm/plugins/Git/cache.
+      interval: 30s
+      scrapeTimeout: 10s
+
+  # ---------------------------------------------------------------------------
+  # Argo CD Server
+  # ---------------------------------------------------------------------------
+  server:
+    # RECOMMENDED CHANGE: three server replicas.
+    # This gives the UI/API tier resilience and distributes client requests. It is not
+    # expected to materially shorten the sync itself, so do not use this as the primary
+    # performance knob for deployments.
+    replicas: 3
+
+    resources:
+      # RECOMMENDED CHANGE: explicit resources for a user-facing application Argo.
+      requests:
+        cpu: 250m
+        memory: 256Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
+
+    metrics:
+      interval: 30s
+      scrapeTimeout: 10s
+
+  monitoring:
+    # RECOMMENDED CHANGE: enable workload monitoring if you are not already creating
+    # equivalent monitoring elsewhere. This is useful for alerting on controllers that
+    # remain pending/slow and for correlating a reported long deployment with control-
+    # plane saturation.
+    enabled: true
+
+# -----------------------------------------------------------------------------
+# SETTINGS DELIBERATELY NOT INCLUDED IN THESE CRs
+# -----------------------------------------------------------------------------
+# 1. topologySpreadConstraints / podAntiAffinity:
+#    The current ArgoCD CR API exposes nodePlacement (nodeSelector/tolerations), but
+#    does not provide a generic affinity/topologySpreadConstraints field. Do not invent
+#    unsupported fields in the ArgoCD CR. Ensure your cluster scheduling policy spreads
+#    the 3 server/repo/Redis-HA pods across failure domains, or apply a separately
+#    supported operator/deployment-level mechanism if your installed OpenShift GitOps
+#    release exposes one.
+#
+# 2. server.autoscale:
+#    Not enabled here deliberately. Server is not the sync bottleneck, and a fixed
+#    3-replica baseline is easier to reason about for a platform service. Add an HPA only
+#    after measuring real UI/API load.
+#
+# 3. controller replicas on LOCAL:
+#    Not used for application scalability because controller sharding is destination-
+#    cluster based. More replicas do not split applications for one destination cluster.
+#
+# 4. Sync-wave / Application decomposition:
+#    These are application-level optimisations, not ArgoCD-CR settings. For the reported
+#    30-minute deployments, inspect sync waves, hooks, health checks and resource ordering
+#    before increasing concurrency without limit.
+#
+# 5. kubectl/application operation limits:
+#    The values above are intentionally starting points. Increasing parallelism can make
+#    things worse if the OpenShift API server, admission webhooks, CRD controllers or
+#    application operators are already saturated.
